@@ -522,16 +522,56 @@
     <dt>GRID SIZE</dt><dd>50 × 50</dd>
     <dt>DIFFICULTY</dt><dd>MAXIMUM</dd>
     <dt>OBJECTIVE</dt><dd>REACH THE EXIT</dd>
-    <dt>CONTROLS</dt><dd>WASD + MOUSE</dd>
+    <dt>PLATFORM</dt><dd>PC + META QUEST 3</dd>
   </dl>
+  <div class="intro-line"></div>
+
+  <!-- Controller bindings -->
+  <div style="display:grid;grid-template-columns:auto auto auto auto;gap:6px 20px;font-size:9px;letter-spacing:1.5px;color:rgba(0,229,255,0.6);align-items:center;width:420px;">
+    <div style="grid-column:1/-1;font-family:'Orbitron';font-size:8px;letter-spacing:4px;color:rgba(255,34,51,0.8);margin-bottom:4px;">⬡ META QUEST 3 CONTROLS</div>
+
+    <!-- col headers -->
+    <span style="color:rgba(255,34,51,0.7);font-family:'Orbitron';font-size:8px;letter-spacing:3px;">LEFT</span>
+    <span style="color:rgba(0,229,255,0.4);font-size:8px;"></span>
+    <span style="color:rgba(255,34,51,0.7);font-family:'Orbitron';font-size:8px;letter-spacing:3px;">RIGHT</span>
+    <span style="color:rgba(0,229,255,0.4);font-size:8px;"></span>
+
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">THUMBSTICK</span>
+    <span>Move / Strafe</span>
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">THUMBSTICK</span>
+    <span>Snap Turn 45°</span>
+
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">GRIP</span>
+    <span>Recenter</span>
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">A BUTTON</span>
+    <span>Start Game</span>
+
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">HEAD TRACK</span>
+    <span>Look Around</span>
+    <span style="color:var(--cyan);background:rgba(0,229,255,0.08);border:1px solid rgba(0,229,255,0.2);padding:2px 6px;font-size:8px;">B BUTTON</span>
+    <span>Toggle HUD</span>
+  </div>
+
   <div class="intro-line"></div>
   <button class="intro-btn" onclick="startGame()">ENTER MAZE</button>
 </div>
 
 <!-- ── VR SCENE ── -->
 <a-scene vr-mode-ui="enabled: true" renderer="antialias: true; colorManagement: true; physicallyCorrectLights: true">
-  <a-entity id="rig" position="0.5 0 0.5">
-    <a-entity id="cam" camera position="0 1.6 0" look-controls wasd-controls></a-entity>
+
+  <a-entity id="rig" position="0.5 0 0.5" vr-locomotion>
+    <!-- Camera -->
+    <a-entity id="cam" camera position="0 1.6 0" look-controls="pointerLockEnabled: true" wasd-controls="acceleration: 20"></a-entity>
+    <!-- Left Controller: thumbstick = strafe/move -->
+    <a-entity id="leftHand"
+      oculus-touch-controls="hand: left; model: true"
+      vr-left-controls>
+    </a-entity>
+    <!-- Right Controller: thumbstick = snap turn, trigger = confirm -->
+    <a-entity id="rightHand"
+      oculus-touch-controls="hand: right; model: true"
+      vr-right-controls>
+    </a-entity>
   </a-entity>
 
   <!-- LIGHTING -->
@@ -603,7 +643,7 @@
     <canvas id="minimap" width="150" height="150"></canvas>
   </div>
   <div class="divider"></div>
-  <div class="controls-hint">
+  <div class="controls-hint" id="controls-hint-text">
     <span>W</span>Forward<br>
     <span>S</span>Back<br>
     <span>A</span><span>D</span>Strafe<br>
@@ -661,6 +701,149 @@
 </div>
 
 <script>
+// ══════════════════════════════════════════════
+// META QUEST 3 VR CONTROLLER COMPONENTS
+// ══════════════════════════════════════════════
+
+// ── VR LOCOMOTION (rig-level, drives the whole rig) ──
+AFRAME.registerComponent('vr-locomotion', {
+  schema: {
+    speed:       { default: 4.0  },   // m/s movement speed
+    snapAngle:   { default: 45   },   // degrees per snap turn
+    snapDelay:   { default: 350  },   // ms between snaps (prevent rapid spinning)
+    deadzone:    { default: 0.20 }    // thumbstick dead-zone
+  },
+  init() {
+    this.velocity      = new THREE.Vector3();
+    this.lastSnapTime  = 0;
+    this.inVR          = false;
+    this.leftAxis      = [0, 0];
+    this.rightAxis     = [0, 0];
+    this.rightWasCenter = true;        // for edge-detection on snap
+
+    // Track VR entry/exit to toggle keyboard hint
+    this.el.sceneEl.addEventListener('enter-vr',  () => { this.inVR = true;  updateControlsHint(true);  });
+    this.el.sceneEl.addEventListener('exit-vr',   () => { this.inVR = false; updateControlsHint(false); });
+
+    // Bind axis events from child controllers
+    this.el.addEventListener('vr-left-axis',  e => { this.leftAxis  = e.detail.axis; });
+    this.el.addEventListener('vr-right-axis', e => { this.rightAxis = e.detail.axis; });
+  },
+  tick(time, delta) {
+    if (!this.inVR) return;
+    const dt = delta / 1000;
+    const cam = document.getElementById('cam');
+    if (!cam) return;
+
+    // ── LEFT STICK: smooth strafe/forward movement ──
+    const lx = this.leftAxis[0], lz = this.leftAxis[1];
+    const dead = this.data.deadzone;
+    if (Math.abs(lx) > dead || Math.abs(lz) > dead) {
+      // Get camera yaw so movement is always relative to where you're looking
+      const camRot = cam.object3D.getWorldQuaternion(new THREE.Quaternion());
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camRot);
+      const right   = new THREE.Vector3(1, 0,  0).applyQuaternion(camRot);
+      forward.y = 0; forward.normalize();
+      right.y   = 0; right.normalize();
+
+      const move = new THREE.Vector3();
+      move.addScaledVector(forward, -lz * this.data.speed * dt);
+      move.addScaledVector(right,    lx * this.data.speed * dt);
+
+      const pos = this.el.getAttribute('position');
+      this.el.setAttribute('position', {
+        x: pos.x + move.x,
+        y: pos.y,
+        z: pos.z + move.z
+      });
+    }
+
+    // ── RIGHT STICK: snap turning (X axis only) ──
+    const rx = this.rightAxis[0];
+    const now = time;
+    if (Math.abs(rx) > 0.6 && this.rightWasCenter && now - this.lastSnapTime > this.data.snapDelay) {
+      const dir = rx > 0 ? -1 : 1;
+      const rigPos = this.el.getAttribute('position');
+      const rigRot = this.el.getAttribute('rotation') || { x:0, y:0, z:0 };
+      this.el.setAttribute('rotation', {
+        x: rigRot.x,
+        y: rigRot.y + dir * this.data.snapAngle,
+        z: rigRot.z
+      });
+      this.lastSnapTime = now;
+      this.rightWasCenter = false;
+
+      // Haptic pulse on snap
+      const rh = document.getElementById('rightHand');
+      if (rh && rh.components['oculus-touch-controls']) {
+        try { rh.components['haptics'] && rh.components['haptics'].pulse(0.3, 80); } catch(e) {}
+      }
+    }
+    if (Math.abs(rx) < 0.3) this.rightWasCenter = true;
+  }
+});
+
+// ── LEFT CONTROLLER — forwards axis up to rig ──
+AFRAME.registerComponent('vr-left-controls', {
+  init() {
+    this.el.addEventListener('axismove', e => {
+      this.el.parentEl.emit('vr-left-axis', { axis: e.detail.axis });
+    });
+
+    // Grip button = recenter / reset rotation
+    this.el.addEventListener('gripdown', () => {
+      const rig = this.el.parentEl;
+      rig.setAttribute('rotation', { x: 0, y: 0, z: 0 });
+    });
+  }
+});
+
+// ── RIGHT CONTROLLER — forwards axis up to rig ──
+AFRAME.registerComponent('vr-right-controls', {
+  init() {
+    this.el.addEventListener('axismove', e => {
+      this.el.parentEl.emit('vr-right-axis', { axis: e.detail.axis });
+    });
+
+    // A button = start game if on intro
+    this.el.addEventListener('abuttondown', () => {
+      const intro = document.getElementById('intro');
+      if (intro && !intro.classList.contains('fade-out')) startGame();
+    });
+
+    // B button = toggle HUD panels
+    this.el.addEventListener('bbuttondown', () => {
+      const panels = document.querySelectorAll('.hud-panel');
+      panels.forEach(p => {
+        p.style.opacity = p.style.opacity === '0' ? '1' : '0';
+        p.style.transition = 'opacity 0.3s';
+      });
+    });
+  }
+});
+
+// ── CONTROLS HINT UPDATER ──
+function updateControlsHint(inVR) {
+  const el = document.getElementById('controls-hint-text');
+  if (!el) return;
+  if (inVR) {
+    el.innerHTML =
+      '<span style="color:var(--cyan);font-family:Orbitron">L-STICK</span> Move<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron">R-STICK</span> Turn 45°<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron">L-GRIP</span> Recenter<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron">B BTN</span> Toggle HUD';
+  } else {
+    el.innerHTML =
+      '<span>W</span>Forward<br>' +
+      '<span>S</span>Back<br>' +
+      '<span>A</span><span>D</span>Strafe<br>' +
+      '<span>MOUSE</span>Look';
+  }
+}
+
+// ══════════════════════════════════════════════
+// MAZE GENERATION
+// ══════════════════════════════════════════════
 // ── MAZE GENERATION ──
 const COLS = 50, ROWS = 50;
 const cells = [];
