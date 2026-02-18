@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>MAZE — 50×50</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+  <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+  <style>
+    :root {
+      --red: #ff2233;
+      --blue: #1a6bcc;
+      --cyan: #00e5ff;
+      --dim: rgba(0,229,255,0.12);
+      --panel: rgba(0,10,20,0.82);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Share Tech Mono', monospace;
+      background: #000;
+      overflow: hidden;
+    }
+
+    /* ── SCANLINE OVERLAY ── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.18) 2px,
+        rgba(0,0,0,0.18) 4px
+      );
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    /* ── CORNER BRACKETS ── */
+    .bracket {
+      position: fixed;
+      width: 60px;
+      height: 60px;
+      z-index: 100;
+      pointer-events: none;
+    }
+    .bracket::before, .bracket::after {
+      content: '';
+      position: absolute;
+      background: var(--cyan);
+    }
+    .bracket::before { width: 100%; height: 3px; }
+    .bracket::after  { width: 3px; height: 100%; }
+
+    .bracket.tl { top: 16px; left: 16px; }
+    .bracket.tr { top: 16px; right: 16px; transform: scaleX(-1); }
+    .bracket.bl { bottom: 16px; left: 16px; transform: scaleY(-1); }
+    .bracket.br { bottom: 16px; right: 16px; transform: scale(-1,-1); }
+
+    /* ── VIGNETTE ── */
+    .vignette {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.75) 100%);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* ── TOP BAR ── */
+    .hud-top {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 88px;
+      background: linear-gradient(to bottom, rgba(0,5,15,0.95), transparent);
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    .hud-title {
+      font-family: 'Orbitron', monospace;
+      font-weight: 900;
+      font-size: 22px;
+      letter-spacing: 8px;
+      color: var(--red);
+      text-shadow: 0 0 20px rgba(255,34,51,0.8), 0 0 40px rgba(255,34,51,0.4);
+      animation: flicker 6s infinite;
+    }
+
+    @keyframes flicker {
+      0%,98%,100% { opacity: 1; }
+      99% { opacity: 0.6; }
+    }
+
+    .hud-status {
+      font-size: 11px;
+      color: var(--cyan);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      display: flex;
+      gap: 24px;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #00ff88;
+      margin-right: 6px;
+      animation: pulse-dot 1.5s ease-in-out infinite;
+      box-shadow: 0 0 8px #00ff88;
+    }
+
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    /* ── BOTTOM BAR ── */
+    .hud-bottom {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 88px;
+      background: linear-gradient(to top, rgba(0,5,15,0.95), transparent);
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    /* ── PANELS (left/right) ── */
+    .hud-panel {
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 200px;
+      background: var(--panel);
+      border: 1px solid rgba(0,229,255,0.2);
+      padding: 18px 16px;
+      z-index: 50;
+      pointer-events: none;
+      backdrop-filter: blur(4px);
+    }
+
+    .hud-panel.left  { left: 16px; border-right: 3px solid var(--red); }
+    .hud-panel.right { right: 16px; border-left: 3px solid var(--red); }
+
+    .panel-label {
+      font-family: 'Orbitron', monospace;
+      font-size: 9px;
+      letter-spacing: 4px;
+      color: var(--cyan);
+      opacity: 0.7;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+    }
+
+    .panel-value {
+      font-family: 'Orbitron', monospace;
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .panel-sub {
+      font-size: 10px;
+      color: var(--cyan);
+      opacity: 0.5;
+      letter-spacing: 2px;
+    }
+
+    .divider {
+      height: 1px;
+      background: linear-gradient(to right, transparent, var(--cyan), transparent);
+      opacity: 0.3;
+      margin: 14px 0;
+    }
+
+    /* ── COMPASS ── */
+    .compass-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      pointer-events: none;
+    }
+
+    .compass-ring {
+      width: 80px; height: 80px;
+      border: 2px solid rgba(0,229,255,0.25);
+      border-radius: 50%;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .compass-ring::before {
+      content: '';
+      position: absolute;
+      inset: 6px;
+      border: 1px solid rgba(0,229,255,0.12);
+      border-radius: 50%;
+    }
+
+    .compass-needle {
+      width: 4px;
+      height: 30px;
+      position: absolute;
+      left: 50%;
+      transform-origin: bottom center;
+      transform: translateX(-50%);
+    }
+
+    .compass-needle .n { 
+      background: var(--red); 
+      height: 60%;
+      width: 100%;
+      margin-bottom: 1px;
+      clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+    }
+
+    .compass-needle .s {
+      background: rgba(0,229,255,0.5);
+      height: 40%;
+      width: 100%;
+      clip-path: polygon(0% 0%, 100% 0%, 50% 100%);
+    }
+
+    .compass-dir {
+      position: absolute;
+      font-family: 'Orbitron', monospace;
+      font-size: 8px;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+    .compass-dir.n { top: 4px; }
+    .compass-dir.s { bottom: 4px; }
+    .compass-dir.e { right: 4px; }
+    .compass-dir.w { left: 4px; }
+
+    .compass-label {
+      font-size: 9px;
+      letter-spacing: 3px;
+      color: var(--cyan);
+      opacity: 0.5;
+      text-transform: uppercase;
+    }
+
+    /* ── TIMER ── */
+    .timer-display {
+      font-family: 'Orbitron', monospace;
+      font-size: 36px;
+      font-weight: 700;
+      color: var(--cyan);
+      letter-spacing: 4px;
+      text-shadow: 0 0 16px rgba(0,229,255,0.6);
+      text-align: center;
+      line-height: 1;
+    }
+
+    .timer-label {
+      font-size: 9px;
+      letter-spacing: 4px;
+      color: var(--cyan);
+      opacity: 0.5;
+      text-align: center;
+      margin-top: 4px;
+    }
+
+    /* ── CROSSHAIR ── */
+    .crosshair {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      width: 24px; height: 24px;
+      z-index: 60;
+      pointer-events: none;
+    }
+
+    .crosshair::before, .crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255,255,255,0.7);
+      border-radius: 2px;
+    }
+    .crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+    .crosshair::after  { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
+
+    .crosshair-ring {
+      position: absolute;
+      inset: -6px;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 50%;
+    }
+
+    /* ── MINIMAP ── */
+    .minimap-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .minimap-label {
+      font-size: 9px;
+      letter-spacing: 3px;
+      color: var(--cyan);
+      opacity: 0.5;
+      text-transform: uppercase;
+    }
+
+    #minimap {
+      display: block;
+      border: 1px solid rgba(0,229,255,0.3);
+      image-rendering: pixelated;
+    }
+
+    /* ── CONTROLS HINT ── */
+    .controls-hint {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--cyan);
+      opacity: 0.45;
+      line-height: 2;
+    }
+
+    .controls-hint span {
+      display: inline-block;
+      background: rgba(0,229,255,0.1);
+      border: 1px solid rgba(0,229,255,0.25);
+      padding: 1px 5px;
+      margin-right: 4px;
+      font-size: 9px;
+    }
+
+    /* ── PROGRESS BAR ── */
+    .progress-wrap {
+      width: 100%;
+    }
+
+    .progress-label {
+      font-size: 9px;
+      letter-spacing: 3px;
+      color: var(--cyan);
+      opacity: 0.6;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .progress-track {
+      height: 4px;
+      background: rgba(0,229,255,0.1);
+      border: 1px solid rgba(0,229,255,0.2);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(to right, var(--blue), var(--cyan));
+      width: 0%;
+      transition: width 0.5s ease;
+      box-shadow: 0 0 8px var(--cyan);
+    }
+
+    /* ── ALERTS ── */
+    .alert-bar {
+      position: fixed;
+      top: 68px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255,34,51,0.12);
+      border: 1px solid rgba(255,34,51,0.4);
+      padding: 8px 24px;
+      font-size: 10px;
+      letter-spacing: 4px;
+      color: var(--red);
+      text-transform: uppercase;
+      z-index: 60;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .alert-bar.visible { opacity: 1; }
+
+    /* Glow bars on sides */
+    .glow-bar {
+      position: fixed;
+      top: 0; bottom: 0;
+      width: 3px;
+      background: linear-gradient(to bottom, transparent, var(--red), transparent);
+      opacity: 0.4;
+      pointer-events: none;
+      z-index: 5;
+    }
+    .glow-bar.left  { left: 0; }
+    .glow-bar.right { right: 0; }
+
+    /* Intro screen */
+    #intro {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      transition: opacity 0.8s ease;
+    }
+
+    #intro.fade-out { opacity: 0; pointer-events: none; }
+
+    .intro-title {
+      font-family: 'Orbitron', monospace;
+      font-weight: 900;
+      font-size: clamp(40px, 7vw, 80px);
+      letter-spacing: 16px;
+      color: var(--red);
+      text-shadow: 0 0 40px rgba(255,34,51,0.8), 0 0 80px rgba(255,34,51,0.3);
+      animation: intro-flicker 0.1s step-end infinite;
+    }
+
+    @keyframes intro-flicker {
+      0%,95%,100% { text-shadow: 0 0 40px rgba(255,34,51,0.8), 0 0 80px rgba(255,34,51,0.3); }
+      96% { text-shadow: none; }
+    }
+
+    .intro-sub {
+      font-size: 12px;
+      letter-spacing: 6px;
+      color: var(--cyan);
+      opacity: 0.7;
+    }
+
+    .intro-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 32px;
+      margin: 12px 0;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: rgba(0,229,255,0.6);
+    }
+
+    .intro-grid dt { color: rgba(0,229,255,0.35); }
+
+    .intro-btn {
+      font-family: 'Orbitron', monospace;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 6px;
+      color: #000;
+      background: var(--red);
+      border: none;
+      padding: 14px 48px;
+      cursor: pointer;
+      text-transform: uppercase;
+      clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%);
+      transition: background 0.2s, box-shadow 0.2s;
+      box-shadow: 0 0 24px rgba(255,34,51,0.5);
+      margin-top: 8px;
+    }
+
+    .intro-btn:hover {
+      background: #ff4455;
+      box-shadow: 0 0 40px rgba(255,34,51,0.9);
+    }
+
+    .intro-line {
+      width: 200px;
+      height: 1px;
+      background: linear-gradient(to right, transparent, var(--cyan), transparent);
+      opacity: 0.4;
+    }
+
+    /* Animated corner decorations on intro */
+    .intro-corner {
+      position: absolute;
+      width: 80px; height: 80px;
+      border-color: var(--red);
+      border-style: solid;
+      border-width: 0;
+      animation: corner-grow 1s ease forwards;
+    }
+    .intro-corner.tl { top: 24px; left: 24px; border-top-width: 2px; border-left-width: 2px; }
+    .intro-corner.tr { top: 24px; right: 24px; border-top-width: 2px; border-right-width: 2px; }
+    .intro-corner.bl { bottom: 24px; left: 24px; border-bottom-width: 2px; border-left-width: 2px; }
+    .intro-corner.br { bottom: 24px; right: 24px; border-bottom-width: 2px; border-right-width: 2px; }
+
+    @keyframes corner-grow {
+      from { width: 0; height: 0; opacity: 0; }
+      to { width: 80px; height: 80px; opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── INTRO SCREEN ── -->
+<div id="intro">
+  <div class="intro-corner tl"></div>
+  <div class="intro-corner tr"></div>
+  <div class="intro-corner bl"></div>
+  <div class="intro-corner br"></div>
+  <div class="intro-title">MAZE</div>
+  <div class="intro-sub">SECTOR 50 · TACTICAL NAVIGATION SYSTEM</div>
+  <div class="intro-line"></div>
+  <dl class="intro-grid">
+    <dt>GRID SIZE</dt><dd>50 × 50</dd>
+    <dt>DIFFICULTY</dt><dd>MAXIMUM</dd>
+    <dt>OBJECTIVE</dt><dd>REACH THE EXIT</dd>
+    <dt>CONTROLS</dt><dd>WASD + MOUSE</dd>
+  </dl>
+  <div class="intro-line"></div>
+  <button class="intro-btn" onclick="startGame()">ENTER MAZE</button>
+</div>
+
+<!-- ── VR SCENE ── -->
+<a-scene vr-mode-ui="enabled: true" renderer="antialias: true; colorManagement: true; physicallyCorrectLights: true">
+  <a-entity id="rig" position="0.5 0 0.5">
+    <a-entity id="cam" camera position="0 1.6 0" look-controls wasd-controls></a-entity>
+  </a-entity>
+
+  <!-- LIGHTING -->
+  <a-light type="ambient" color="#1a3366" intensity="0.5"></a-light>
+  <a-light type="directional" color="#ffffff" intensity="0.9" position="-10 20 10" cast-shadow="true"></a-light>
+  <!-- Red accent lights at corners -->
+  <a-light type="point" color="#ff2233" intensity="3" distance="12" decay="2" position="0.5 2 0.5"></a-light>
+  <a-light type="point" color="#ff2233" intensity="3" distance="12" decay="2" position="49.5 2 49.5"></a-light>
+  <a-light type="point" color="#0044ff" intensity="2" distance="15" decay="2" position="24.5 4 24.5"></a-light>
+  <!-- Roaming atmospheric light -->
+  <a-light id="roam-light" type="point" color="#ff2233" intensity="4" distance="8" decay="2" position="10 2 10"
+    animation="property: position; to: 40 2 40; dir: alternate; loop: true; dur: 8000; easing: easeInOutSine">
+  </a-light>
+
+  <!-- SKY -->
+  <a-sky color="#0b3880"></a-sky>
+
+  <!-- FLOOR -->
+  <a-plane rotation="-90 0 0" width="50" height="50" position="24.5 0 24.5"
+    material="color: #0d1a33; roughness: 0.8; metalness: 0.2; repeat: 50 50"
+    shadow="receive: true">
+  </a-plane>
+
+  <!-- Start/Exit markers -->
+  <a-torus id="start-ring" position="0.5 0.5 0.5" radius="0.4" radius-tubular="0.06" color="#00ff88"
+    animation="property: rotation; to: 0 360 0; loop: true; dur: 3000"></a-torus>
+  <a-light type="point" color="#00ff88" intensity="2.5" distance="5" decay="2" position="0.5 1 0.5"></a-light>
+
+  <a-torus id="exit-ring" position="49.5 0.5 49.5" radius="0.4" radius-tubular="0.06" color="#ff2233"
+    animation="property: rotation; to: 0 -360 0; loop: true; dur: 2000"></a-torus>
+  <a-light type="point" color="#ff2233" intensity="4" distance="8" decay="2" position="49.5 1.5 49.5"></a-light>
+
+  <a-entity id="maze-container"></a-entity>
+</a-scene>
+
+<!-- ── HUD ── -->
+<div class="glow-bar left"></div>
+<div class="glow-bar right"></div>
+<div class="vignette"></div>
+
+<div class="bracket tl"></div>
+<div class="bracket tr"></div>
+<div class="bracket bl"></div>
+<div class="bracket br"></div>
+
+<div class="crosshair"><div class="crosshair-ring"></div></div>
+
+<!-- Alert -->
+<div class="alert-bar" id="alert-bar">⚠ SIGNAL LOST — NAVIGATE TO EXIT</div>
+
+<!-- Top bar -->
+<div class="hud-top">
+  <div class="hud-title">MAZE</div>
+  <div style="text-align:center;">
+    <div class="timer-display" id="timer">00:00</div>
+    <div class="timer-label">ELAPSED TIME</div>
+  </div>
+  <div class="hud-status">
+    <span><span class="status-dot"></span>SYSTEMS ONLINE</span>
+    <span id="coord-display">0.0 / 0.0</span>
+  </div>
+</div>
+
+<!-- Left panel -->
+<div class="hud-panel left">
+  <div class="panel-label">// Navigation</div>
+  <div class="minimap-wrap">
+    <div class="minimap-label">Minimap</div>
+    <canvas id="minimap" width="150" height="150"></canvas>
+  </div>
+  <div class="divider"></div>
+  <div class="controls-hint">
+    <span>W</span>Forward<br>
+    <span>S</span>Back<br>
+    <span>A</span><span>D</span>Strafe<br>
+    <span>MOUSE</span>Look
+  </div>
+</div>
+
+<!-- Right panel -->
+<div class="hud-panel right">
+  <div class="panel-label">// Status</div>
+
+  <div class="compass-wrap">
+    <div class="compass-ring">
+      <div class="compass-needle" id="compass-needle">
+        <div class="n"></div>
+        <div class="s"></div>
+      </div>
+      <span class="compass-dir n">N</span>
+      <span class="compass-dir s">S</span>
+      <span class="compass-dir e">E</span>
+      <span class="compass-dir w">W</span>
+    </div>
+    <div class="compass-label">Bearing</div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="panel-label">// Progress to Exit</div>
+  <div class="progress-wrap">
+    <div class="progress-label">
+      <span>DIST</span>
+      <span id="dist-label">—</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="panel-label">// Objective</div>
+  <div style="font-size:9px; color:var(--cyan); opacity:0.7; line-height:1.8; letter-spacing:1px;">
+    REACH THE<br>
+    <span style="color: var(--red); font-family: 'Orbitron'; font-weight:700; letter-spacing:3px;">RED EXIT RING</span><br>
+    AT SECTOR<br>
+    <span style="font-family:'Orbitron'; font-size:11px; color:#fff;">49 / 49</span>
+  </div>
+</div>
+
+<!-- Bottom bar -->
+<div class="hud-bottom">
+  <div class="controls-hint">50×50 PROCEDURAL MAZE</div>
+  <div style="font-family:'Orbitron'; font-size:10px; color:var(--cyan); letter-spacing:3px; opacity:0.5;" id="seed-display">SEED: —</div>
+  <div class="controls-hint" id="step-count">STEPS: 0</div>
+</div>
+
+<script>
+// ── MAZE GENERATION ──
+const COLS = 50, ROWS = 50;
+const cells = [];
+for (let r = 0; r < ROWS; r++) {
+  cells[r] = [];
+  for (let c = 0; c < COLS; c++) {
+    cells[r][c] = { N: true, S: true, E: true, W: true, visited: false };
+  }
+}
+
+const seed = Math.floor(Math.random() * 999999);
+document.getElementById('seed-display').textContent = 'SEED: ' + seed;
+
+function seededRand(s) {
+  let state = s;
+  return function() {
+    state = (state * 1664525 + 1013904223) & 0xffffffff;
+    return (state >>> 0) / 0xffffffff;
+  };
+}
+const rand = seededRand(seed);
+
+function carveMaze() {
+  const stack = [[0, 0]];
+  cells[0][0].visited = true;
+  const opp = { N:'S', S:'N', E:'W', W:'E' };
+  while (stack.length) {
+    const [r, c] = stack[stack.length - 1];
+    const dirs = ['N','S','E','W'].sort(() => rand() - 0.5);
+    let moved = false;
+    for (const d of dirs) {
+      let nr = r + (d==='S'?1:d==='N'?-1:0);
+      let nc = c + (d==='E'?1:d==='W'?-1:0);
+      if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&!cells[nr][nc].visited) {
+        cells[r][c][d] = false;
+        cells[nr][nc][opp[d]] = false;
+        cells[nr][nc].visited = true;
+        stack.push([nr, nc]);
+        moved = true; break;
+      }
+    }
+    if (!moved) stack.pop();
+  }
+}
+carveMaze();
+
+// ── RENDER MAZE ──
+const WALL_H = 2.4, WALL_T = 0.12, WALL_COLOR = '#cc1111';
+const container = document.getElementById('maze-container');
+
+function addBox(x,y,z,w,h,d) {
+  const el = document.createElement('a-box');
+  el.setAttribute('position', `${x} ${y} ${z}`);
+  el.setAttribute('width', w);
+  el.setAttribute('height', h);
+  el.setAttribute('depth', d);
+  el.setAttribute('material', `color: ${WALL_COLOR}; roughness: 0.4; metalness: 0.3`);
+  el.setAttribute('shadow', 'cast: true; receive: true');
+  return el;
+}
+
+function buildWalls() {
+  const frag = document.createDocumentFragment();
+  // Horizontal walls
+  for (let r = 0; r <= ROWS; r++) {
+    let run = -1;
+    for (let c = 0; c <= COLS; c++) {
+      let wall = (r===0||r===ROWS) ? c<COLS : (c<COLS && cells[r][c].N);
+      if (wall && run===-1) run = c;
+      if (!wall && run!==-1) {
+        const len = c - run;
+        frag.appendChild(addBox(run+len/2, WALL_H/2, r, len, WALL_H, WALL_T));
+        run = -1;
+      }
+    }
+    if (run!==-1) {
+      const len = COLS - run;
+      frag.appendChild(addBox(run+len/2, WALL_H/2, r, len, WALL_H, WALL_T));
+    }
+  }
+  // Vertical walls
+  for (let c = 0; c <= COLS; c++) {
+    let run = -1;
+    for (let r = 0; r <= ROWS; r++) {
+      let wall = (c===0||c===COLS) ? r<ROWS : (r<ROWS && cells[r][c].W);
+      if (wall && run===-1) run = r;
+      if (!wall && run!==-1) {
+        const len = r - run;
+        frag.appendChild(addBox(c, WALL_H/2, run+len/2, WALL_T, WALL_H, len));
+        run = -1;
+      }
+    }
+    if (run!==-1) {
+      const len = ROWS - run;
+      frag.appendChild(addBox(c, WALL_H/2, run+len/2, WALL_T, WALL_H, len));
+    }
+  }
+  container.appendChild(frag);
+}
+
+buildWalls();
+
+// ── MINIMAP ──
+const canvas = document.getElementById('minimap');
+const ctx = canvas.getContext('2d');
+const CELL = 3;
+canvas.width  = COLS * CELL;
+canvas.height = ROWS * CELL;
+
+function drawMinimap(playerCol, playerRow) {
+  ctx.fillStyle = '#050d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#cc1111';
+  ctx.lineWidth = 0.8;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = c * CELL, y = r * CELL;
+      if (cells[r][c].N) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+CELL,y); ctx.stroke(); }
+      if (cells[r][c].W) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+CELL); ctx.stroke(); }
+    }
+  }
+  // border
+  ctx.strokeStyle = '#cc1111';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+  // exit
+  ctx.fillStyle = '#ff2233';
+  ctx.fillRect((COLS-1)*CELL+1, (ROWS-1)*CELL+1, CELL-2, CELL-2);
+  // start
+  ctx.fillStyle = '#00ff88';
+  ctx.fillRect(1, 1, CELL-2, CELL-2);
+
+  // player dot
+  if (playerCol !== undefined) {
+    const px = Math.floor(playerCol) * CELL + CELL/2;
+    const py = Math.floor(playerRow) * CELL + CELL/2;
+    ctx.fillStyle = '#00e5ff';
+    ctx.beginPath();
+    ctx.arc(px, py, CELL, 0, Math.PI*2);
+    ctx.fill();
+    // glow
+    ctx.shadowColor = '#00e5ff';
+    ctx.shadowBlur = 6;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+drawMinimap(0, 0);
+
+// ── HUD UPDATES ──
+let seconds = 0, steps = 0, timerRunning = false;
+let lastPos = null;
+
+function startGame() {
+  document.getElementById('intro').classList.add('fade-out');
+  setTimeout(() => {
+    document.getElementById('intro').style.display = 'none';
+    timerRunning = true;
+    // Show alert briefly
+    const alert = document.getElementById('alert-bar');
+    alert.classList.add('visible');
+    setTimeout(() => alert.classList.remove('visible'), 3000);
+  }, 800);
+}
+
+// Timer
+setInterval(() => {
+  if (!timerRunning) return;
+  seconds++;
+  const m = String(Math.floor(seconds/60)).padStart(2,'0');
+  const s = String(seconds%60).padStart(2,'0');
+  document.getElementById('timer').textContent = m + ':' + s;
+}, 1000);
+
+// Position / compass / progress tracking
+function tick() {
+  const cam = document.getElementById('cam');
+  const rig = document.getElementById('rig');
+  if (!cam || !rig) { requestAnimationFrame(tick); return; }
+
+  const pos = rig.getAttribute('position');
+  if (!pos) { requestAnimationFrame(tick); return; }
+
+  const px = pos.x, pz = pos.z;
+  const col = px, row = pz;
+
+  // Coords
+  document.getElementById('coord-display').textContent =
+    col.toFixed(1) + ' / ' + row.toFixed(1);
+
+  // Steps
+  if (lastPos) {
+    const dx = px - lastPos.x, dz = pz - lastPos.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    if (dist > 0.05) {
+      steps += dist;
+      document.getElementById('step-count').textContent = 'STEPS: ' + Math.floor(steps);
+    }
+  }
+  lastPos = { x: px, z: pz };
+
+  // Minimap
+  drawMinimap(col, row);
+
+  // Progress bar
+  const maxDist = Math.sqrt(50*50 + 50*50);
+  const curDist = Math.sqrt((49.5-px)**2 + (49.5-pz)**2);
+  const progress = Math.max(0, Math.min(100, (1 - curDist/maxDist) * 100));
+  document.getElementById('progress-fill').style.width = progress.toFixed(1) + '%';
+  document.getElementById('dist-label').textContent = curDist.toFixed(1) + 'u';
+
+  // Compass (use camera rotation)
+  const camEl = cam;
+  const rot = camEl.getAttribute('rotation');
+  if (rot) {
+    const angle = -rot.y;
+    document.getElementById('compass-needle').style.transform =
+      `translateX(-50%) rotate(${angle}deg)`;
+  }
+
+  // Reached exit?
+  if (curDist < 1.5 && timerRunning) {
+    timerRunning = false;
+    const alert = document.getElementById('alert-bar');
+    alert.style.color = '#00ff88';
+    alert.style.borderColor = 'rgba(0,255,136,0.4)';
+    alert.style.background = 'rgba(0,255,136,0.08)';
+    alert.textContent = '✓ EXIT REACHED — TIME: ' + document.getElementById('timer').textContent;
+    alert.classList.add('visible');
+  }
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
