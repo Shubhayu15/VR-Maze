@@ -213,20 +213,25 @@
       border-radius: 50%;
     }
 
+    /* FIX: Compass needle uses a wrapper div that rotates, containing N and S parts */
     .compass-needle {
       width: 4px;
       height: 30px;
       position: absolute;
       left: 50%;
-      transform-origin: bottom center;
-      transform: translateX(-50%);
+      top: 50%;
+      transform-origin: center center;
+      /* FIX: correct initial transform so it's centered, not offset */
+      transform: translateX(-50%) translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
-    .compass-needle .n { 
-      background: var(--red); 
+    .compass-needle .n {
+      background: var(--red);
       height: 60%;
       width: 100%;
-      margin-bottom: 1px;
       clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
     }
 
@@ -244,10 +249,10 @@
       font-weight: 700;
       color: var(--cyan);
     }
-    .compass-dir.n { top: 4px; }
-    .compass-dir.s { bottom: 4px; }
-    .compass-dir.e { right: 4px; }
-    .compass-dir.w { left: 4px; }
+    .compass-dir.n { top: 4px; left: 50%; transform: translateX(-50%); }
+    .compass-dir.s { bottom: 4px; left: 50%; transform: translateX(-50%); }
+    .compass-dir.e { right: 4px; top: 50%; transform: translateY(-50%); }
+    .compass-dir.w { left: 4px; top: 50%; transform: translateY(-50%); }
 
     .compass-label {
       font-size: 9px;
@@ -323,6 +328,9 @@
       display: block;
       border: 1px solid rgba(0,229,255,0.3);
       image-rendering: pixelated;
+      /* FIX: constrain minimap so it fits in the panel */
+      width: 160px;
+      height: 160px;
     }
 
     /* ── CONTROLS HINT ── */
@@ -391,6 +399,7 @@
       pointer-events: none;
       opacity: 0;
       transition: opacity 0.3s;
+      white-space: nowrap;
     }
 
     .alert-bar.visible { opacity: 1; }
@@ -562,14 +571,10 @@
   <a-entity id="rig" position="0.5 0 0.5" vr-locomotion>
     <!-- Camera -->
     <a-entity id="cam" camera position="0 1.6 0" look-controls="pointerLockEnabled: true" wasd-controls="acceleration: 20"></a-entity>
-    <!-- Left Controller: model only, locomotion handled by vr-locomotion gamepad polling -->
-    <a-entity id="leftHand"
-      oculus-touch-controls="hand: left; model: true">
-    </a-entity>
-    <!-- Right Controller: model only, snap-turn handled by vr-locomotion gamepad polling -->
-    <a-entity id="rightHand"
-      oculus-touch-controls="hand: right; model: true">
-    </a-entity>
+    <!-- Left Controller -->
+    <a-entity id="leftHand" oculus-touch-controls="hand: left; model: true"></a-entity>
+    <!-- Right Controller -->
+    <a-entity id="rightHand" oculus-touch-controls="hand: right; model: true"></a-entity>
   </a-entity>
 
   <!-- LIGHTING -->
@@ -589,7 +594,7 @@
 
   <!-- FLOOR -->
   <a-plane rotation="-90 0 0" width="50" height="50" position="24.5 0 24.5"
-    material="color: #0d1a33; roughness: 0.8; metalness: 0.2; repeat: 50 50"
+    material="color: #0d1a33; roughness: 0.8; metalness: 0.2"
     shadow="receive: true">
   </a-plane>
 
@@ -655,6 +660,7 @@
 
   <div class="compass-wrap">
     <div class="compass-ring">
+      <!-- FIX: needle is now a simple rotatable div centered inside the ring -->
       <div class="compass-needle" id="compass-needle">
         <div class="n"></div>
         <div class="s"></div>
@@ -701,31 +707,25 @@
 <script>
 // ══════════════════════════════════════════════
 // META QUEST 3 — THUMBSTICK LOCOMOTION
-// Uses the raw Gamepad API (navigator.getGamepads)
-// which is what WebXR actually exposes on Quest.
-//
-// Quest controller gamepad layout:
-//   Left  gamepad: axes[2]=thumbstick X, axes[3]=thumbstick Y
-//   Right gamepad: axes[2]=thumbstick X, axes[3]=thumbstick Y
-//   (axes[0]/[1] are the touchpad, not the stick)
 // ══════════════════════════════════════════════
 
 AFRAME.registerComponent('vr-locomotion', {
   schema: {
-    speed:     { default: 5.0  },  // movement speed m/s
-    deadzone:  { default: 0.15 },  // ignore tiny stick drift
-    snapAngle: { default: 45   },  // degrees per snap turn
-    snapGap:   { default: 400  }   // ms minimum between snaps
+    speed:     { default: 5.0  },
+    deadzone:  { default: 0.15 },
+    snapAngle: { default: 45   },
+    snapGap:   { default: 400  }
   },
 
   init() {
-    this.inVR         = false;
-    this.snapReady    = true;
-    this.lastSnapMs   = 0;
-    this._moveVec     = new THREE.Vector3();
-    this._camQuat     = new THREE.Quaternion();
-    this._forward     = new THREE.Vector3();
-    this._right       = new THREE.Vector3();
+    this.inVR       = false;
+    this.snapReady  = true;
+    this.lastSnapMs = 0;
+    this._bWasDown  = false;   // FIX: initialise B-button edge-detect flag here
+    this._moveVec   = new THREE.Vector3();
+    this._camQuat   = new THREE.Quaternion();
+    this._forward   = new THREE.Vector3();
+    this._right     = new THREE.Vector3();
 
     const scene = this.el.sceneEl;
     scene.addEventListener('enter-vr', () => { this.inVR = true;  updateControlsHint(true);  });
@@ -735,14 +735,11 @@ AFRAME.registerComponent('vr-locomotion', {
   tick(time, delta) {
     if (!this.inVR) return;
 
-    // ── Read raw gamepads ──────────────────────────
     const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
     let leftGP = null, rightGP = null;
 
     for (const gp of gamepads) {
       if (!gp) continue;
-      // Quest labels handedness in gp.hand or via index (0=left,1=right)
-      // Most reliable: check gp.hand string, fall back to index
       const hand = (gp.hand || '').toLowerCase();
       if (hand === 'left'  || gp.index === 0) leftGP  = gp;
       if (hand === 'right' || gp.index === 1) rightGP = gp;
@@ -756,13 +753,10 @@ AFRAME.registerComponent('vr-locomotion', {
 
     // ── LEFT STICK → smooth move + strafe ─────────
     if (leftGP && leftGP.axes.length >= 4) {
-      // axes[2] = thumbstick X (left/right strafe)
-      // axes[3] = thumbstick Y (forward/back, negative = forward)
       const lx = leftGP.axes[2];
       const ly = leftGP.axes[3];
 
       if (Math.abs(lx) > dead || Math.abs(ly) > dead) {
-        // Get camera world yaw only (flatten to XZ plane)
         cam.object3D.getWorldQuaternion(this._camQuat);
         this._forward.set(0, 0, -1).applyQuaternion(this._camQuat);
         this._right.set(1, 0, 0).applyQuaternion(this._camQuat);
@@ -776,24 +770,21 @@ AFRAME.registerComponent('vr-locomotion', {
         const pos = rig.object3D.position;
         pos.x += this._moveVec.x;
         pos.z += this._moveVec.z;
-        // keep y=0 so we don't float
-        pos.y = 0;
+        pos.y  = 0;
       }
     }
 
-    // ── RIGHT STICK → snap turn (X axis) ──────────
+    // ── RIGHT STICK → snap turn ────────────────────
     if (rightGP && rightGP.axes.length >= 4) {
       const rx = rightGP.axes[2];
 
       if (Math.abs(rx) > 0.6) {
-        if (this.snapReady && time - this.lastSnapMs > this.data.snapGap) {
+        if (this.snapReady && (time - this.lastSnapMs) > this.data.snapGap) {
           const deg = rx > 0 ? -this.data.snapAngle : this.data.snapAngle;
-          // Rotate the rig Y directly on object3D for precision
           rig.object3D.rotation.y += THREE.MathUtils.degToRad(deg);
           this.lastSnapMs = time;
           this.snapReady  = false;
 
-          // Haptic feedback on snap turn
           try {
             if (rightGP.hapticActuators && rightGP.hapticActuators[0]) {
               rightGP.hapticActuators[0].pulse(0.4, 80);
@@ -801,38 +792,39 @@ AFRAME.registerComponent('vr-locomotion', {
           } catch(e) {}
         }
       } else if (Math.abs(rx) < 0.3) {
-        this.snapReady = true; // re-arm once stick returns to centre
+        this.snapReady = true;
       }
     }
 
     // ── LEFT GRIP (button index 1) → recenter yaw ─
-    if (leftGP && leftGP.buttons[1] && leftGP.buttons[1].pressed) {
+    if (leftGP && leftGP.buttons && leftGP.buttons[1] && leftGP.buttons[1].pressed) {
       rig.object3D.rotation.y = 0;
     }
 
     // ── RIGHT A button (index 4) → start game ─────
-    if (rightGP && rightGP.buttons[4] && rightGP.buttons[4].pressed) {
+    if (rightGP && rightGP.buttons && rightGP.buttons[4] && rightGP.buttons[4].pressed) {
       const intro = document.getElementById('intro');
       if (intro && !intro.classList.contains('fade-out')) startGame();
     }
 
-    // ── RIGHT B button (index 5) → toggle HUD ─────
-    if (rightGP && rightGP.buttons[5] && rightGP.buttons[5].value === 1) {
-      // edge detect: only fire on fresh press
-      if (!this._bWasDown) {
+    // ── RIGHT B button (index 5) → toggle HUD (edge detect) ─────
+    // FIX: use .pressed instead of .value === 1 for reliable button detection
+    if (rightGP && rightGP.buttons && rightGP.buttons[5]) {
+      const bPressed = rightGP.buttons[5].pressed;
+      if (bPressed && !this._bWasDown) {
         this._bWasDown = true;
         document.querySelectorAll('.hud-panel').forEach(p => {
           p.style.transition = 'opacity 0.3s';
-          p.style.opacity = p.style.opacity === '0' ? '1' : '0';
+          p.style.opacity = (p.style.opacity === '0') ? '1' : '0';
         });
+      } else if (!bPressed) {
+        this._bWasDown = false;
       }
-    } else {
-      this._bWasDown = false;
     }
   }
 });
 
-// ── Controls hint swaps between keyboard and Quest layout ──
+// ── Controls hint ──
 function updateControlsHint(inVR) {
   const el = document.getElementById('controls-hint-text');
   if (!el) return;
@@ -849,9 +841,8 @@ function updateControlsHint(inVR) {
 }
 
 // ══════════════════════════════════════════════
-// MAZE GENERATION
+// MAZE GENERATION — Recursive Backtracker
 // ══════════════════════════════════════════════
-// ── MAZE GENERATION ──
 const COLS = 50, ROWS = 50;
 const cells = [];
 for (let r = 0; r < ROWS; r++) {
@@ -864,32 +855,45 @@ for (let r = 0; r < ROWS; r++) {
 const seed = Math.floor(Math.random() * 999999);
 document.getElementById('seed-display').textContent = 'SEED: ' + seed;
 
+// FIX: seededRand now returns values reliably in [0, 1)
 function seededRand(s) {
-  let state = s;
+  let state = (s >>> 0) || 1;
   return function() {
-    state = (state * 1664525 + 1013904223) & 0xffffffff;
-    return (state >>> 0) / 0xffffffff;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return ((state >>> 0) / 4294967296);
   };
 }
 const rand = seededRand(seed);
 
 function carveMaze() {
+  // FIX: Use iterative DFS with explicit stack to avoid call-stack overflow on large mazes
   const stack = [[0, 0]];
   cells[0][0].visited = true;
   const opp = { N:'S', S:'N', E:'W', W:'E' };
+  const delta = { N:[-1,0], S:[1,0], E:[0,1], W:[0,-1] };
+
   while (stack.length) {
     const [r, c] = stack[stack.length - 1];
-    const dirs = ['N','S','E','W'].sort(() => rand() - 0.5);
+    // Shuffle directions using Fisher-Yates for correctness
+    const dirs = ['N','S','E','W'];
+    for (let i = dirs.length - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
+    }
+
     let moved = false;
     for (const d of dirs) {
-      let nr = r + (d==='S'?1:d==='N'?-1:0);
-      let nc = c + (d==='E'?1:d==='W'?-1:0);
-      if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&!cells[nr][nc].visited) {
-        cells[r][c][d] = false;
+      const nr = r + delta[d][0];
+      const nc = c + delta[d][1];
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && !cells[nr][nc].visited) {
+        cells[r][c][d]        = false;
         cells[nr][nc][opp[d]] = false;
         cells[nr][nc].visited = true;
         stack.push([nr, nc]);
-        moved = true; break;
+        moved = true;
+        break;
       }
     }
     if (!moved) stack.pop();
@@ -901,12 +905,12 @@ carveMaze();
 const WALL_H = 2.4, WALL_T = 0.12, WALL_COLOR = '#cc1111';
 const container = document.getElementById('maze-container');
 
-function addBox(x,y,z,w,h,d) {
+function addBox(x, y, z, w, h, d) {
   const el = document.createElement('a-box');
   el.setAttribute('position', `${x} ${y} ${z}`);
-  el.setAttribute('width', w);
+  el.setAttribute('width',  w);
   el.setAttribute('height', h);
-  el.setAttribute('depth', d);
+  el.setAttribute('depth',  d);
   el.setAttribute('material', `color: ${WALL_COLOR}; roughness: 0.4; metalness: 0.3`);
   el.setAttribute('shadow', 'cast: true; receive: true');
   return el;
@@ -914,138 +918,182 @@ function addBox(x,y,z,w,h,d) {
 
 function buildWalls() {
   const frag = document.createDocumentFragment();
-  // Horizontal walls
+
+  // ── Horizontal walls (run-length merged along columns) ──
   for (let r = 0; r <= ROWS; r++) {
     let run = -1;
     for (let c = 0; c <= COLS; c++) {
-      let wall = (r===0||r===ROWS) ? c<COLS : (c<COLS && cells[r][c].N);
-      if (wall && run===-1) run = c;
-      if (!wall && run!==-1) {
+      // FIX: south wall of cell (r-1,c) == north wall of cell (r,c).
+      // Outer top border: r===0, always a wall for c < COLS.
+      // Outer bottom border: r===ROWS, always a wall for c < COLS.
+      // Interior: use cells[r][c].N (north wall of the current row's cell).
+      let isWall;
+      if (c >= COLS) {
+        isWall = false; // past the grid: flush current run
+      } else if (r === 0 || r === ROWS) {
+        isWall = true;  // border wall
+      } else {
+        isWall = cells[r][c].N;
+      }
+
+      if (isWall && run === -1) {
+        run = c;
+      } else if (!isWall && run !== -1) {
         const len = c - run;
-        frag.appendChild(addBox(run+len/2, WALL_H/2, r, len, WALL_H, WALL_T));
+        frag.appendChild(addBox(run + len / 2, WALL_H / 2, r, len, WALL_H, WALL_T));
         run = -1;
       }
     }
-    if (run!==-1) {
+    // Flush any remaining run at end of row
+    if (run !== -1) {
       const len = COLS - run;
-      frag.appendChild(addBox(run+len/2, WALL_H/2, r, len, WALL_H, WALL_T));
+      frag.appendChild(addBox(run + len / 2, WALL_H / 2, r, len, WALL_H, WALL_T));
     }
   }
-  // Vertical walls
+
+  // ── Vertical walls (run-length merged along rows) ──
   for (let c = 0; c <= COLS; c++) {
     let run = -1;
     for (let r = 0; r <= ROWS; r++) {
-      let wall = (c===0||c===COLS) ? r<ROWS : (r<ROWS && cells[r][c].W);
-      if (wall && run===-1) run = r;
-      if (!wall && run!==-1) {
+      let isWall;
+      if (r >= ROWS) {
+        isWall = false;
+      } else if (c === 0 || c === COLS) {
+        isWall = true;
+      } else {
+        isWall = cells[r][c].W;
+      }
+
+      if (isWall && run === -1) {
+        run = r;
+      } else if (!isWall && run !== -1) {
         const len = r - run;
-        frag.appendChild(addBox(c, WALL_H/2, run+len/2, WALL_T, WALL_H, len));
+        frag.appendChild(addBox(c, WALL_H / 2, run + len / 2, WALL_T, WALL_H, len));
         run = -1;
       }
     }
-    if (run!==-1) {
+    if (run !== -1) {
       const len = ROWS - run;
-      frag.appendChild(addBox(c, WALL_H/2, run+len/2, WALL_T, WALL_H, len));
+      frag.appendChild(addBox(c, WALL_H / 2, run + len / 2, WALL_T, WALL_H, len));
     }
   }
+
   container.appendChild(frag);
 }
 
-buildWalls();
+// FIX: Wait for A-Frame scene to be ready before injecting entities
+const sceneEl = document.querySelector('a-scene');
+if (sceneEl.hasLoaded) {
+  buildWalls();
+} else {
+  sceneEl.addEventListener('loaded', buildWalls);
+}
 
 // ── MINIMAP ──
 const canvas = document.getElementById('minimap');
-const ctx = canvas.getContext('2d');
-const CELL = 3;
+const ctx    = canvas.getContext('2d');
+// FIX: canvas resolution matches COLS/ROWS * CELL, CSS size set to 160×160 via stylesheet
+const CELL   = 3;
 canvas.width  = COLS * CELL;
 canvas.height = ROWS * CELL;
 
 function drawMinimap(playerCol, playerRow) {
   ctx.fillStyle = '#050d1a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+
   ctx.strokeStyle = '#cc1111';
-  ctx.lineWidth = 0.8;
+  ctx.lineWidth   = 0.8;
+
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const x = c * CELL, y = r * CELL;
-      if (cells[r][c].N) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+CELL,y); ctx.stroke(); }
-      if (cells[r][c].W) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+CELL); ctx.stroke(); }
+      const x = c * CELL;
+      const y = r * CELL;
+      if (cells[r][c].N) {
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + CELL, y); ctx.stroke();
+      }
+      if (cells[r][c].W) {
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + CELL); ctx.stroke();
+      }
     }
   }
-  // border
+
+  // Draw outer border explicitly (south + east edges)
   ctx.strokeStyle = '#cc1111';
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth   = 1.5;
+  // FIX: draw all four sides of the border cleanly
   ctx.strokeRect(0, 0, canvas.width, canvas.height);
 
-  // exit
+  // Exit marker
   ctx.fillStyle = '#ff2233';
-  ctx.fillRect((COLS-1)*CELL+1, (ROWS-1)*CELL+1, CELL-2, CELL-2);
-  // start
-  ctx.fillStyle = '#00ff88';
-  ctx.fillRect(1, 1, CELL-2, CELL-2);
+  ctx.fillRect((COLS - 1) * CELL + 1, (ROWS - 1) * CELL + 1, CELL - 2, CELL - 2);
 
-  // player dot
+  // Start marker
+  ctx.fillStyle = '#00ff88';
+  ctx.fillRect(1, 1, CELL - 2, CELL - 2);
+
+  // Player dot
   if (playerCol !== undefined) {
-    const px = Math.floor(playerCol) * CELL + CELL/2;
-    const py = Math.floor(playerRow) * CELL + CELL/2;
-    ctx.fillStyle = '#00e5ff';
-    ctx.beginPath();
-    ctx.arc(px, py, CELL, 0, Math.PI*2);
-    ctx.fill();
-    // glow
+    const px = Math.max(0, Math.min(canvas.width  - 1, playerCol * CELL + CELL / 2));
+    const py = Math.max(0, Math.min(canvas.height - 1, playerRow * CELL + CELL / 2));
     ctx.shadowColor = '#00e5ff';
-    ctx.shadowBlur = 6;
+    ctx.shadowBlur  = 6;
+    ctx.fillStyle   = '#00e5ff';
+    ctx.beginPath();
+    ctx.arc(px, py, CELL, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
   }
 }
 drawMinimap(0, 0);
 
-// ── HUD UPDATES ──
-let seconds = 0, steps = 0, timerRunning = false;
-let lastPos = null;
+// ── GAME STATE ──
+let seconds      = 0;
+let steps        = 0;
+let timerRunning = false;
+let lastPos      = null;
+let gameOver     = false;   // FIX: prevent exit message from firing multiple times
 
 function startGame() {
-  document.getElementById('intro').classList.add('fade-out');
+  const intro = document.getElementById('intro');
+  if (!intro || intro.classList.contains('fade-out')) return; // FIX: guard double-call
+  intro.classList.add('fade-out');
   setTimeout(() => {
-    document.getElementById('intro').style.display = 'none';
+    intro.style.display = 'none';
     timerRunning = true;
-    // Show alert briefly
     const alert = document.getElementById('alert-bar');
     alert.classList.add('visible');
     setTimeout(() => alert.classList.remove('visible'), 3000);
   }, 800);
 }
 
-// Timer
+// Timer (only increments when running)
 setInterval(() => {
   if (!timerRunning) return;
   seconds++;
-  const m = String(Math.floor(seconds/60)).padStart(2,'0');
-  const s = String(seconds%60).padStart(2,'0');
+  const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+  const s = String(seconds % 60).padStart(2, '0');
   document.getElementById('timer').textContent = m + ':' + s;
 }, 1000);
 
-// Position / compass / progress tracking
-function tick() {
-  const cam = document.getElementById('cam');
+// ── HUD FRAME LOOP ──
+function hudTick() {
   const rig = document.getElementById('rig');
-  if (!cam || !rig) { requestAnimationFrame(tick); return; }
+  const cam = document.getElementById('cam');
+  if (!rig || !cam) { requestAnimationFrame(hudTick); return; }
 
-  const pos = rig.getAttribute('position');
-  if (!pos) { requestAnimationFrame(tick); return; }
+  const pos = rig.object3D.position; // FIX: read from object3D directly — faster and always available
+  const px = pos.x;
+  const pz = pos.z;
 
-  const px = pos.x, pz = pos.z;
-  const col = px, row = pz;
-
-  // Coords
+  // Coordinate display
   document.getElementById('coord-display').textContent =
-    col.toFixed(1) + ' / ' + row.toFixed(1);
+    px.toFixed(1) + ' / ' + pz.toFixed(1);
 
-  // Steps
+  // Step counter (distance travelled)
   if (lastPos) {
-    const dx = px - lastPos.x, dz = pz - lastPos.z;
-    const dist = Math.sqrt(dx*dx + dz*dz);
+    const dx   = px - lastPos.x;
+    const dz   = pz - lastPos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist > 0.05) {
       steps += dist;
       document.getElementById('step-count').textContent = 'STEPS: ' + Math.floor(steps);
@@ -1053,39 +1101,41 @@ function tick() {
   }
   lastPos = { x: px, z: pz };
 
-  // Minimap
-  drawMinimap(col, row);
+  // Minimap (clamp player position to grid bounds for the dot)
+  drawMinimap(
+    Math.max(0, Math.min(COLS - 0.01, px)),
+    Math.max(0, Math.min(ROWS - 0.01, pz))
+  );
 
-  // Progress bar
-  const maxDist = Math.sqrt(50*50 + 50*50);
-  const curDist = Math.sqrt((49.5-px)**2 + (49.5-pz)**2);
-  const progress = Math.max(0, Math.min(100, (1 - curDist/maxDist) * 100));
+  // Progress bar — distance from exit at (49.5, 49.5)
+  const maxDist  = Math.sqrt(49.5 * 49.5 + 49.5 * 49.5);
+  const curDist  = Math.sqrt((49.5 - px) ** 2 + (49.5 - pz) ** 2);
+  const progress = Math.max(0, Math.min(100, (1 - curDist / maxDist) * 100));
   document.getElementById('progress-fill').style.width = progress.toFixed(1) + '%';
-  document.getElementById('dist-label').textContent = curDist.toFixed(1) + 'u';
+  document.getElementById('dist-label').textContent    = curDist.toFixed(1) + 'u';
 
-  // Compass (use camera rotation)
-  const camEl = cam;
-  const rot = camEl.getAttribute('rotation');
-  if (rot) {
-    const angle = -rot.y;
-    document.getElementById('compass-needle').style.transform =
-      `translateX(-50%) rotate(${angle}deg)`;
-  }
+  // Compass — derive yaw from camera world rotation
+  // FIX: read rotation.y from object3D instead of getAttribute (avoids string parsing lag)
+  const yawRad  = cam.object3D.rotation.y + rig.object3D.rotation.y;
+  const yawDeg  = THREE.MathUtils.radToDeg(yawRad);
+  document.getElementById('compass-needle').style.transform =
+    `translateX(-50%) translateY(-50%) rotate(${-yawDeg}deg)`;
 
-  // Reached exit?
-  if (curDist < 1.5 && timerRunning) {
+  // Exit detection
+  if (!gameOver && curDist < 1.5 && timerRunning) {
+    gameOver     = true;
     timerRunning = false;
     const alert = document.getElementById('alert-bar');
-    alert.style.color = '#00ff88';
+    alert.style.color       = '#00ff88';
     alert.style.borderColor = 'rgba(0,255,136,0.4)';
-    alert.style.background = 'rgba(0,255,136,0.08)';
+    alert.style.background  = 'rgba(0,255,136,0.08)';
     alert.textContent = '✓ EXIT REACHED — TIME: ' + document.getElementById('timer').textContent;
     alert.classList.add('visible');
   }
 
-  requestAnimationFrame(tick);
+  requestAnimationFrame(hudTick);
 }
-requestAnimationFrame(tick);
+requestAnimationFrame(hudTick);
 </script>
 </body>
 </html>
