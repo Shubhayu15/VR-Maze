@@ -562,15 +562,13 @@
   <a-entity id="rig" position="0.5 0 0.5" vr-locomotion>
     <!-- Camera -->
     <a-entity id="cam" camera position="0 1.6 0" look-controls="pointerLockEnabled: true" wasd-controls="acceleration: 20"></a-entity>
-    <!-- Left Controller: thumbstick = strafe/move -->
+    <!-- Left Controller: model only, locomotion handled by vr-locomotion gamepad polling -->
     <a-entity id="leftHand"
-      oculus-touch-controls="hand: left; model: true"
-      vr-left-controls>
+      oculus-touch-controls="hand: left; model: true">
     </a-entity>
-    <!-- Right Controller: thumbstick = snap turn, trigger = confirm -->
+    <!-- Right Controller: model only, snap-turn handled by vr-locomotion gamepad polling -->
     <a-entity id="rightHand"
-      oculus-touch-controls="hand: right; model: true"
-      vr-right-controls>
+      oculus-touch-controls="hand: right; model: true">
     </a-entity>
   </a-entity>
 
@@ -702,142 +700,151 @@
 
 <script>
 // ══════════════════════════════════════════════
-// META QUEST 3 VR CONTROLLER COMPONENTS
+// META QUEST 3 — THUMBSTICK LOCOMOTION
+// Uses the raw Gamepad API (navigator.getGamepads)
+// which is what WebXR actually exposes on Quest.
+//
+// Quest controller gamepad layout:
+//   Left  gamepad: axes[2]=thumbstick X, axes[3]=thumbstick Y
+//   Right gamepad: axes[2]=thumbstick X, axes[3]=thumbstick Y
+//   (axes[0]/[1] are the touchpad, not the stick)
 // ══════════════════════════════════════════════
 
-// ── VR LOCOMOTION (rig-level, drives the whole rig) ──
 AFRAME.registerComponent('vr-locomotion', {
   schema: {
-    speed:       { default: 4.0  },   // m/s movement speed
-    snapAngle:   { default: 45   },   // degrees per snap turn
-    snapDelay:   { default: 350  },   // ms between snaps (prevent rapid spinning)
-    deadzone:    { default: 0.20 }    // thumbstick dead-zone
+    speed:     { default: 5.0  },  // movement speed m/s
+    deadzone:  { default: 0.15 },  // ignore tiny stick drift
+    snapAngle: { default: 45   },  // degrees per snap turn
+    snapGap:   { default: 400  }   // ms minimum between snaps
   },
+
   init() {
-    this.velocity      = new THREE.Vector3();
-    this.lastSnapTime  = 0;
-    this.inVR          = false;
-    this.leftAxis      = [0, 0];
-    this.rightAxis     = [0, 0];
-    this.rightWasCenter = true;        // for edge-detection on snap
+    this.inVR         = false;
+    this.snapReady    = true;
+    this.lastSnapMs   = 0;
+    this._moveVec     = new THREE.Vector3();
+    this._camQuat     = new THREE.Quaternion();
+    this._forward     = new THREE.Vector3();
+    this._right       = new THREE.Vector3();
 
-    // Track VR entry/exit to toggle keyboard hint
-    this.el.sceneEl.addEventListener('enter-vr',  () => { this.inVR = true;  updateControlsHint(true);  });
-    this.el.sceneEl.addEventListener('exit-vr',   () => { this.inVR = false; updateControlsHint(false); });
-
-    // Bind axis events from child controllers
-    this.el.addEventListener('vr-left-axis',  e => { this.leftAxis  = e.detail.axis; });
-    this.el.addEventListener('vr-right-axis', e => { this.rightAxis = e.detail.axis; });
+    const scene = this.el.sceneEl;
+    scene.addEventListener('enter-vr', () => { this.inVR = true;  updateControlsHint(true);  });
+    scene.addEventListener('exit-vr',  () => { this.inVR = false; updateControlsHint(false); });
   },
+
   tick(time, delta) {
     if (!this.inVR) return;
-    const dt = delta / 1000;
-    const cam = document.getElementById('cam');
+
+    // ── Read raw gamepads ──────────────────────────
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let leftGP = null, rightGP = null;
+
+    for (const gp of gamepads) {
+      if (!gp) continue;
+      // Quest labels handedness in gp.hand or via index (0=left,1=right)
+      // Most reliable: check gp.hand string, fall back to index
+      const hand = (gp.hand || '').toLowerCase();
+      if (hand === 'left'  || gp.index === 0) leftGP  = gp;
+      if (hand === 'right' || gp.index === 1) rightGP = gp;
+    }
+
+    const dead = this.data.deadzone;
+    const dt   = delta / 1000;
+    const rig  = this.el;
+    const cam  = document.getElementById('cam');
     if (!cam) return;
 
-    // ── LEFT STICK: smooth strafe/forward movement ──
-    const lx = this.leftAxis[0], lz = this.leftAxis[1];
-    const dead = this.data.deadzone;
-    if (Math.abs(lx) > dead || Math.abs(lz) > dead) {
-      // Get camera yaw so movement is always relative to where you're looking
-      const camRot = cam.object3D.getWorldQuaternion(new THREE.Quaternion());
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camRot);
-      const right   = new THREE.Vector3(1, 0,  0).applyQuaternion(camRot);
-      forward.y = 0; forward.normalize();
-      right.y   = 0; right.normalize();
+    // ── LEFT STICK → smooth move + strafe ─────────
+    if (leftGP && leftGP.axes.length >= 4) {
+      // axes[2] = thumbstick X (left/right strafe)
+      // axes[3] = thumbstick Y (forward/back, negative = forward)
+      const lx = leftGP.axes[2];
+      const ly = leftGP.axes[3];
 
-      const move = new THREE.Vector3();
-      move.addScaledVector(forward, -lz * this.data.speed * dt);
-      move.addScaledVector(right,    lx * this.data.speed * dt);
+      if (Math.abs(lx) > dead || Math.abs(ly) > dead) {
+        // Get camera world yaw only (flatten to XZ plane)
+        cam.object3D.getWorldQuaternion(this._camQuat);
+        this._forward.set(0, 0, -1).applyQuaternion(this._camQuat);
+        this._right.set(1, 0, 0).applyQuaternion(this._camQuat);
+        this._forward.y = 0; this._forward.normalize();
+        this._right.y   = 0; this._right.normalize();
 
-      const pos = this.el.getAttribute('position');
-      this.el.setAttribute('position', {
-        x: pos.x + move.x,
-        y: pos.y,
-        z: pos.z + move.z
-      });
-    }
+        this._moveVec.set(0, 0, 0);
+        this._moveVec.addScaledVector(this._forward, -ly * this.data.speed * dt);
+        this._moveVec.addScaledVector(this._right,    lx * this.data.speed * dt);
 
-    // ── RIGHT STICK: snap turning (X axis only) ──
-    const rx = this.rightAxis[0];
-    const now = time;
-    if (Math.abs(rx) > 0.6 && this.rightWasCenter && now - this.lastSnapTime > this.data.snapDelay) {
-      const dir = rx > 0 ? -1 : 1;
-      const rigPos = this.el.getAttribute('position');
-      const rigRot = this.el.getAttribute('rotation') || { x:0, y:0, z:0 };
-      this.el.setAttribute('rotation', {
-        x: rigRot.x,
-        y: rigRot.y + dir * this.data.snapAngle,
-        z: rigRot.z
-      });
-      this.lastSnapTime = now;
-      this.rightWasCenter = false;
-
-      // Haptic pulse on snap
-      const rh = document.getElementById('rightHand');
-      if (rh && rh.components['oculus-touch-controls']) {
-        try { rh.components['haptics'] && rh.components['haptics'].pulse(0.3, 80); } catch(e) {}
+        const pos = rig.object3D.position;
+        pos.x += this._moveVec.x;
+        pos.z += this._moveVec.z;
+        // keep y=0 so we don't float
+        pos.y = 0;
       }
     }
-    if (Math.abs(rx) < 0.3) this.rightWasCenter = true;
-  }
-});
 
-// ── LEFT CONTROLLER — forwards axis up to rig ──
-AFRAME.registerComponent('vr-left-controls', {
-  init() {
-    this.el.addEventListener('axismove', e => {
-      this.el.parentEl.emit('vr-left-axis', { axis: e.detail.axis });
-    });
+    // ── RIGHT STICK → snap turn (X axis) ──────────
+    if (rightGP && rightGP.axes.length >= 4) {
+      const rx = rightGP.axes[2];
 
-    // Grip button = recenter / reset rotation
-    this.el.addEventListener('gripdown', () => {
-      const rig = this.el.parentEl;
-      rig.setAttribute('rotation', { x: 0, y: 0, z: 0 });
-    });
-  }
-});
+      if (Math.abs(rx) > 0.6) {
+        if (this.snapReady && time - this.lastSnapMs > this.data.snapGap) {
+          const deg = rx > 0 ? -this.data.snapAngle : this.data.snapAngle;
+          // Rotate the rig Y directly on object3D for precision
+          rig.object3D.rotation.y += THREE.MathUtils.degToRad(deg);
+          this.lastSnapMs = time;
+          this.snapReady  = false;
 
-// ── RIGHT CONTROLLER — forwards axis up to rig ──
-AFRAME.registerComponent('vr-right-controls', {
-  init() {
-    this.el.addEventListener('axismove', e => {
-      this.el.parentEl.emit('vr-right-axis', { axis: e.detail.axis });
-    });
+          // Haptic feedback on snap turn
+          try {
+            if (rightGP.hapticActuators && rightGP.hapticActuators[0]) {
+              rightGP.hapticActuators[0].pulse(0.4, 80);
+            }
+          } catch(e) {}
+        }
+      } else if (Math.abs(rx) < 0.3) {
+        this.snapReady = true; // re-arm once stick returns to centre
+      }
+    }
 
-    // A button = start game if on intro
-    this.el.addEventListener('abuttondown', () => {
+    // ── LEFT GRIP (button index 1) → recenter yaw ─
+    if (leftGP && leftGP.buttons[1] && leftGP.buttons[1].pressed) {
+      rig.object3D.rotation.y = 0;
+    }
+
+    // ── RIGHT A button (index 4) → start game ─────
+    if (rightGP && rightGP.buttons[4] && rightGP.buttons[4].pressed) {
       const intro = document.getElementById('intro');
       if (intro && !intro.classList.contains('fade-out')) startGame();
-    });
+    }
 
-    // B button = toggle HUD panels
-    this.el.addEventListener('bbuttondown', () => {
-      const panels = document.querySelectorAll('.hud-panel');
-      panels.forEach(p => {
-        p.style.opacity = p.style.opacity === '0' ? '1' : '0';
-        p.style.transition = 'opacity 0.3s';
-      });
-    });
+    // ── RIGHT B button (index 5) → toggle HUD ─────
+    if (rightGP && rightGP.buttons[5] && rightGP.buttons[5].value === 1) {
+      // edge detect: only fire on fresh press
+      if (!this._bWasDown) {
+        this._bWasDown = true;
+        document.querySelectorAll('.hud-panel').forEach(p => {
+          p.style.transition = 'opacity 0.3s';
+          p.style.opacity = p.style.opacity === '0' ? '1' : '0';
+        });
+      }
+    } else {
+      this._bWasDown = false;
+    }
   }
 });
 
-// ── CONTROLS HINT UPDATER ──
+// ── Controls hint swaps between keyboard and Quest layout ──
 function updateControlsHint(inVR) {
   const el = document.getElementById('controls-hint-text');
   if (!el) return;
   if (inVR) {
     el.innerHTML =
-      '<span style="color:var(--cyan);font-family:Orbitron">L-STICK</span> Move<br>' +
-      '<span style="color:var(--cyan);font-family:Orbitron">R-STICK</span> Turn 45°<br>' +
-      '<span style="color:var(--cyan);font-family:Orbitron">L-GRIP</span> Recenter<br>' +
-      '<span style="color:var(--cyan);font-family:Orbitron">B BTN</span> Toggle HUD';
+      '<span style="color:var(--cyan);font-family:Orbitron,monospace;font-size:8px;letter-spacing:2px">L-STICK</span> Move/Strafe<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron,monospace;font-size:8px;letter-spacing:2px">R-STICK</span> Snap Turn<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron,monospace;font-size:8px;letter-spacing:2px">L-GRIP</span> Recenter<br>' +
+      '<span style="color:var(--cyan);font-family:Orbitron,monospace;font-size:8px;letter-spacing:2px">A / B</span> Start / HUD';
   } else {
     el.innerHTML =
-      '<span>W</span>Forward<br>' +
-      '<span>S</span>Back<br>' +
-      '<span>A</span><span>D</span>Strafe<br>' +
-      '<span>MOUSE</span>Look';
+      '<span>W</span>Forward<br><span>S</span>Back<br><span>A</span><span>D</span>Strafe<br><span>MOUSE</span>Look';
   }
 }
 
